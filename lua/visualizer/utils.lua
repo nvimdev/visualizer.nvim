@@ -1,12 +1,16 @@
 local M = {}
 
--- 创建根节点
 function M.create_root_node(root, hierarchy_item)
+  local range = hierarchy_item.selectionRange or hierarchy_item.range
+  local start_col = range and range.start.character or 0
+
   return {
     id = 0,
     name = hierarchy_item.name or root.detail,
     filename = vim.fn.fnamemodify(root.file, ':t'),
+    filepath = root.file,
     line = root.line,
+    column = start_col + 1,
     type = 'root',
     isDefinition = true,
     isRoot = true,
@@ -16,7 +20,6 @@ function M.create_root_node(root, hierarchy_item)
   }
 end
 
--- 添加传入调用
 function M.add_incoming_calls(chain_data, incoming_calls, root_id)
   if not incoming_calls or #incoming_calls == 0 then
     return
@@ -28,11 +31,17 @@ function M.add_incoming_calls(chain_data, incoming_calls, root_id)
     local node_id = base_id + i
     local caller = incoming_call.from
 
+    local range = caller.selectionRange or caller.range
+    local start_col = range and range.start.character or 0
+    local filepath = vim.uri_to_fname(caller.uri)
+
     local caller_node = {
       id = node_id,
       name = caller.name,
-      filename = vim.fn.fnamemodify(vim.uri_to_fname(caller.uri), ':t'),
+      filename = vim.fn.fnamemodify(filepath, ':t'),
+      filepath = filepath,
       line = caller.selectionRange.start.line + 1,
+      column = start_col + 1,
       type = 'incoming',
       isDefinition = false,
       isIncoming = true,
@@ -44,7 +53,6 @@ function M.add_incoming_calls(chain_data, incoming_calls, root_id)
 
     table.insert(chain_data.nodes, caller_node)
 
-    -- 添加边：从调用者指向根节点（表示调用关系）
     table.insert(chain_data.edges, {
       source = caller_node.id,
       target = root_id,
@@ -54,7 +62,6 @@ function M.add_incoming_calls(chain_data, incoming_calls, root_id)
   end
 end
 
--- 添加传出调用
 function M.add_outgoing_calls(chain_data, outgoing_calls, root_id)
   if not outgoing_calls or #outgoing_calls == 0 then
     return
@@ -66,11 +73,18 @@ function M.add_outgoing_calls(chain_data, outgoing_calls, root_id)
     local node_id = base_id + i
     local callee = outgoing_call.to
 
+    -- 提取位置信息
+    local range = callee.selectionRange or callee.range
+    local start_col = range and range.start.character or 0
+    local filepath = vim.uri_to_fname(callee.uri)
+
     local callee_node = {
       id = node_id,
       name = callee.name,
-      filename = vim.fn.fnamemodify(vim.uri_to_fname(callee.uri), ':t'),
+      filename = vim.fn.fnamemodify(filepath, ':t'),
+      filepath = filepath, -- 完整路径
       line = callee.selectionRange.start.line + 1,
+      column = start_col + 1, -- 转换为1基索引
       type = 'outgoing',
       isDefinition = false,
       isOutgoing = true,
@@ -103,7 +117,6 @@ function M.finalize_data(chain_data)
     mode = chain_data.mode or 'unknown',
   }
 
-  -- 计算统计信息
   for _, node in ipairs(chain_data.nodes) do
     if node.type == 'root' then
       stats.root_function = node.name
@@ -114,7 +127,6 @@ function M.finalize_data(chain_data)
     end
   end
 
-  -- 按文件分组
   local files = {}
   for _, node in ipairs(chain_data.nodes) do
     local filename = node.filename
@@ -142,65 +154,6 @@ function M.finalize_data(chain_data)
       generated_at = os.date('%Y-%m-%d %H:%M:%S'),
       lsp_method = 'callHierarchy',
       mode = stats.mode,
-    },
-  }
-end
-
--- 向后兼容的构建调用链函数
-function M.build_call_chain(root, result)
-  local nodes = {}
-  local edges = {}
-  local node_id = 0
-
-  -- 添加定义节点
-  local def_node = {
-    id = node_id,
-    name = root.detail,
-    filename = vim.fn.fnamemodify(root.file, ':t'),
-    line = root.line,
-    type = 'root',
-    isDefinition = true,
-    size = 2.0,
-  }
-  table.insert(nodes, def_node)
-  node_id = node_id + 1
-
-  -- 添加引用节点
-  for _, ref in ipairs(result) do
-    local node = ref.from
-    local ref_node = {
-      id = node_id,
-      name = node.name,
-      filename = vim.fn.fnamemodify(vim.uri_to_fname(node.uri), ':t'),
-      line = node.selectionRange.start.line + 1,
-      type = 'incoming',
-      isDefinition = false,
-      isIncoming = true,
-      size = 1.0,
-    }
-    table.insert(nodes, ref_node)
-
-    -- 添加边
-    table.insert(edges, {
-      source = ref_node.id,
-      target = def_node.id,
-      value = 1,
-      type = 'incoming',
-    })
-
-    node_id = node_id + 1
-  end
-
-  return {
-    nodes = nodes,
-    edges = edges,
-    summary = {
-      root_function = def_node.name,
-      total_nodes = #nodes,
-      total_edges = #edges,
-      incoming_calls = #nodes - 1,
-      outgoing_calls = 0,
-      mode = 'incoming',
     },
   }
 end

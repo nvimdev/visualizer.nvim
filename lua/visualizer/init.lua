@@ -5,9 +5,11 @@ local utils = require('visualizer.utils')
 local INCOMING, OUTGOING, FULL = 1, 2, 3
 
 local function request(client, bufnr, win, mode)
+  local cursor_pos = api.nvim_win_get_cursor(win)
   local root = {
     detail = vim.fn.expand('<cword>'),
-    line = api.nvim_win_get_cursor(win)[1],
+    line = cursor_pos[1],
+    column = cursor_pos[2] + 1,
     file = api.nvim_buf_get_name(bufnr),
   }
   local params = vim.lsp.util.make_position_params(win, client.offset_encoding)
@@ -105,17 +107,23 @@ end
 
 function M.show_incoming()
   server.start_server()
-  hierarchy(INCOMING)
+  vim.schedule(function()
+    hierarchy(INCOMING)
+  end)
 end
 
 function M.show_outgoing()
   server.start_server()
-  hierarchy(OUTGOING)
+  vim.schedule(function()
+    hierarchy(OUTGOING)
+  end)
 end
 
 function M.show_full()
   server.start_server()
-  hierarchy(FULL)
+  vim.schedule(function()
+    hierarchy(FULL)
+  end)
 end
 
 return M

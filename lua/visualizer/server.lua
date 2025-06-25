@@ -10,6 +10,47 @@ local function get_assets_dir()
   return script_path:sub(1, e)
 end
 
+local function handle_open_file(client, request_body)
+  local success, data = pcall(vim.json.decode, request_body)
+  if not success or not data then
+    uv.write(client, 'HTTP/1.1 400 Bad Request\r\n\r\n{"error": "Invalid JSON"}')
+    return
+  end
+
+  local filepath = data.filepath
+  local line = data.line or 1
+  local column = data.column or 1
+
+  if not filepath then
+    uv.write(client, 'HTTP/1.1 400 Bad Request\r\n\r\n{"error": "No filepath provided"}')
+    return
+  end
+
+  vim.schedule(function()
+    if vim.fn.filereadable(filepath) == 1 then
+      vim.cmd('edit ' .. vim.fn.fnameescape(filepath))
+      vim.api.nvim_win_set_cursor(0, { line, column - 1 }) -- nvim使用0基索引的列
+      vim.cmd('normal! zz')
+      vim.notify(
+        string.format('Opened %s at line %d, column %d', vim.fn.fnamemodify(filepath, ':t'), line, column),
+        vim.log.levels.INFO
+      )
+    else
+      vim.notify('File not found: ' .. filepath, vim.log.levels.ERROR)
+    end
+  end)
+
+  local response = vim.json.encode({ success = true, message = 'File opened' })
+  uv.write(client, {
+    'HTTP/1.1 200 OK\r\n',
+    'Content-Type: application/json\r\n',
+    'Access-Control-Allow-Origin: *\r\n',
+    'Content-Length: ' .. #response .. '\r\n',
+    '\r\n',
+    response,
+  })
+end
+
 function M.start_server()
   if server and not server:is_closing() then
     server:close()
@@ -23,55 +64,78 @@ function M.start_server()
     assert(not err, err)
     local client = uv.new_tcp()
     uv.accept(server, client)
+
+    local request_data = ''
+
     uv.read_start(client, function(err, chunk)
       if err then
         uv.close(client)
         return
       end
       if chunk then
-        if chunk:match('GET /assets/') then
-          local path = chunk:match('GET (/assets/[^%s]+)')
-          if path then
-            local assets_dir = get_assets_dir()
-            local file_path = assets_dir .. '/assets/three.min.js'
-            local file = io.open(file_path, 'rb')
-            if file then
-              local content = file:read('*a')
-              file:close()
+        request_data = request_data .. chunk
 
-              local content_type = 'application/javascript'
-              if file_path:match('%.css$') then
-                content_type = 'text/css'
-              elseif file_path:match('%.html$') then
-                content_type = 'text/html'
+        local headers_end = request_data:find('\r\n\r\n')
+        if headers_end then
+          local headers = request_data:sub(1, headers_end - 1)
+          local body = request_data:sub(headers_end + 4)
+
+          if headers:match('GET /assets/') then
+            local path = headers:match('GET (/assets/[^%s]+)')
+            if path then
+              local assets_dir = get_assets_dir()
+              local file_path = assets_dir .. '/assets/three.min.js'
+              local file = io.open(file_path, 'rb')
+              if file then
+                local content = file:read('*a')
+                file:close()
+
+                local content_type = 'application/javascript'
+                if file_path:match('%.css$') then
+                  content_type = 'text/css'
+                elseif file_path:match('%.html$') then
+                  content_type = 'text/html'
+                end
+
+                uv.write(client, {
+                  'HTTP/1.1 200 OK\r\n',
+                  'Content-Type: ' .. content_type .. '\r\n',
+                  'Content-Length: ' .. #content .. '\r\n',
+                  '\r\n',
+                  content,
+                })
+              else
+                uv.write(client, 'HTTP/1.1 404 Not Found\r\n\r\n')
               end
-
-              uv.write(client, {
-                'HTTP/1.1 200 OK\r\n',
-                'Content-Type: ' .. content_type .. '\r\n',
-                'Content-Length: ' .. #content .. '\r\n',
-                '\r\n',
-                content,
-              })
             else
               uv.write(client, 'HTTP/1.1 404 Not Found\r\n\r\n')
             end
+          elseif headers:match('POST /open%-file') then
+            local content_length = headers:match('Content%-Length: (%d+)')
+            if content_length then
+              local expected_length = tonumber(content_length)
+              if #body >= expected_length then
+                handle_open_file(client, body:sub(1, expected_length))
+              else
+                return
+              end
+            else
+              handle_open_file(client, body)
+            end
+          elseif headers:match('GET /') then
+            local html = M.get_html()
+            uv.write(client, {
+              'HTTP/1.1 200 OK\r\n',
+              'Content-Type: text/html\r\n',
+              'Content-Length: ' .. #html .. '\r\n',
+              '\r\n',
+              html,
+            })
           else
             uv.write(client, 'HTTP/1.1 404 Not Found\r\n\r\n')
           end
-        elseif chunk:match('GET /') then
-          local html = M.get_html()
-          uv.write(client, {
-            'HTTP/1.1 200 OK\r\n',
-            'Content-Type: text/html\r\n',
-            'Content-Length: ' .. #html .. '\r\n',
-            '\r\n',
-            html,
-          })
-        else
-          uv.write(client, 'HTTP/1.1 404 Not Found\r\n\r\n')
+          uv.close(client)
         end
-        uv.close(client)
       end
     end)
   end)
@@ -179,6 +243,7 @@ function M.get_html()
             .legend-root { background: #FF6B6B; }
             .legend-incoming { background: #4fc3f7; }
             .legend-outgoing { background: #66bb6a; }
+            .legend-visited { background: #ffd700; }
         </style>
     </head>
     <body>
@@ -197,10 +262,15 @@ function M.get_html()
                 <div class="legend-color legend-outgoing"></div>
                 <span>Called Functions (Outgoing)</span>
             </div>
+            <div class="legend-item">
+                <div class="legend-color legend-visited"></div>
+                <span>Visited Nodes</span>
+            </div>
         </div>
         <div id="controls">
             <button id="resetView">Reset View</button>
             <button id="togglePhysics">Pause Physics</button>
+            <button id="clearVisited">Clear Visited</button>
             <label>
                 <input type="checkbox" id="showLabels" checked> Show Labels
             </label>
@@ -221,6 +291,7 @@ function M.get_html()
             let physicsEnabled = true;
             let showLabels = true;
             let forceStrength = 1.0;
+            let visitedNodes = new Set();
 
             const REPULSION_FORCE = 80;
             const SPRING_FORCE = 0.08;
@@ -261,6 +332,7 @@ function M.get_html()
 
                 document.getElementById('resetView').addEventListener('click', resetCamera);
                 document.getElementById('togglePhysics').addEventListener('click', togglePhysics);
+                document.getElementById('clearVisited').addEventListener('click', clearVisited);
                 document.getElementById('showLabels').addEventListener('change', function(e) {
                     showLabels = e.target.checked;
                     updateLabelsVisibility();
@@ -270,6 +342,49 @@ function M.get_html()
                 });
 
                 animate();
+            }
+
+            function clearVisited() {
+                visitedNodes.clear();
+                resetNodeColors();
+                const summaryElement = document.getElementById('summary');
+                if (summaryElement) {
+                    document.getElementById('info').innerHTML = 
+                        'LSP Call Chain Visualization<br><span id="summary">' + 
+                        summaryElement.textContent + '</span>';
+                }
+            }
+
+            function openFile(node) {
+                if (!node.filepath) {
+                    console.error('No filepath available for node:', node);
+                    return;
+                }
+
+                const requestData = {
+                    filepath: node.filepath,
+                    line: node.line || 1,
+                    column: node.column || 1
+                };
+
+                fetch('/open-file', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(requestData)
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        console.log('File opened successfully:', node.filepath);
+                    } else {
+                        console.error('Failed to open file:', data.error);
+                    }
+                })
+                .catch(error => {
+                    console.error('Error opening file:', error);
+                });
             }
 
             let isDragging = false;
@@ -460,8 +575,8 @@ function M.get_html()
             function addLabel(mesh, node, index) {
                 const canvas = document.createElement('canvas');
                 const context = canvas.getContext('2d');
-                canvas.width = 380;
-                canvas.height = 100;
+                canvas.width = 420;
+                canvas.height = 120;
 
                 const gradient = context.createLinearGradient(0, 0, canvas.width, canvas.height);
                 if (node.type === 'root' || node.isDefinition) {
@@ -477,22 +592,22 @@ function M.get_html()
                     gradient.addColorStop(0, 'rgba(78, 205, 196, 0.9)');
                     gradient.addColorStop(1, 'rgba(50, 160, 150, 0.9)');
                 }
-                
+
                 context.fillStyle = gradient;
                 context.fillRect(0, 0, canvas.width, canvas.height);
-                
+
                 context.strokeStyle = 'rgba(255, 255, 255, 0.4)';
                 context.lineWidth = 2;
                 context.strokeRect(1, 1, canvas.width - 2, canvas.height - 2);
-                
+
                 context.fillStyle = 'white';
                 context.textAlign = 'center';
                 context.shadowColor = 'rgba(0, 0, 0, 0.8)';
                 context.shadowBlur = 4;
-                
+
                 context.font = 'bold 24px Arial';
                 context.fillText(node.name, canvas.width / 2, 32);
-                
+
                 context.font = '16px Arial';
                 context.fillStyle = 'rgba(255, 255, 255, 0.9)';
                 let subtitle = '';
@@ -507,7 +622,12 @@ function M.get_html()
 
                 context.font = '14px Arial';
                 context.fillStyle = 'rgba(255, 255, 255, 0.7)';
-                context.fillText(node.filename || '', canvas.width / 2, 78);
+                const locationText = `${node.filename || ''}:${node.line || 1}:${node.column || 1}`;
+                context.fillText(locationText, canvas.width / 2, 78);
+
+                context.font = '12px Arial';
+                context.fillStyle = 'rgba(255, 255, 255, 0.6)';
+                context.fillText('Click to open in Neovim', canvas.width / 2, 98);
 
                 const texture = new THREE.CanvasTexture(canvas);
                 const material = new THREE.SpriteMaterial({ 
@@ -516,7 +636,7 @@ function M.get_html()
                     opacity: 0.95
                 });
                 const sprite = new THREE.Sprite(material);
-                sprite.scale.set(14, 3.5, 1);
+                sprite.scale.set(16, 4.5, 1);
                 sprite.userData = { index: index };
                 scene.add(sprite);
                 labels.push(sprite);
@@ -736,6 +856,10 @@ function M.get_html()
                         const clickedNode = intersects[0].object.userData.node;
                         const clickedIndex = intersects[0].object.userData.index;
 
+                        visitedNodes.add(clickedNode.id);
+
+                        openFile(clickedNode);
+
                         if (selectedNode === clickedNode) {
                             selectedNode = null;
                             resetNodeColors();
@@ -765,7 +889,8 @@ function M.get_html()
                             }
 
                             const info = `${nodeTypeText}: ${clickedNode.name}<br>` +
-                                        `File: ${clickedNode.filename}:${clickedNode.line}`;
+                                        `File: ${clickedNode.filename}:${clickedNode.line}:${clickedNode.column}<br>` +
+                                        `Opening in Neovim...`;
                             document.getElementById('info').innerHTML = info;
                         }
                     }
@@ -801,7 +926,9 @@ function M.get_html()
                     const node = nodes[index];
                     let defaultEmissive;
 
-                    if (node.type === 'root') {
+                    if (visitedNodes.has(node.id) && selectedNode !== node) {
+                        defaultEmissive = 0x886600; // 金色，表示已访问
+                    } else if (node.type === 'root') {
                         defaultEmissive = 0x443300;
                     } else if (node.type === 'incoming') {
                         defaultEmissive = 0x113344;
