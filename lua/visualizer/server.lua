@@ -494,7 +494,7 @@ function M.get_html()
 
                     if (node.type === 'root' || node.isDefinition) {
                         geometry = new THREE.OctahedronGeometry(size, 0);
-                        color = 0xffd700;
+                        color = 0xff6b6b;
                         emissiveColor = 0x443300;
                     } else if (node.type === 'incoming' || node.isIncoming) {
                         geometry = new THREE.SphereGeometry(size * 0.8, 20, 20);
