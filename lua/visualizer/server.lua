@@ -278,15 +278,53 @@ function M.get_html()
             <label>Force Strength: <input type="range" id="forceStrength" min="0.1" max="3" step="0.1" value="1"></label>
         </div>
 
-        <script src="/assets/three.min.js"></script>
         <script>
+            function handleThreeJSLoadError() {
+                console.error('Failed to load Three.js from /assets/three.min.js');
+                document.getElementById('summary').textContent = 'Failed to load 3D visualization library';
+                // fallback from cdn
+                const script = document.createElement('script');
+                script.src = 'https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js';
+                script.onload = () => {
+                    console.log('Three.js loaded from CDN');
+                    waitForThree(() => init());
+                };
+                script.onerror = () => {
+                    console.error('Failed to load Three.js from CDN as well');
+                    document.getElementById('summary').textContent = 'Error: Cannot load 3D visualization';
+                };
+                document.head.appendChild(script);
+            }
+
+            function loadThreeJS() {
+                const script = document.createElement('script');
+                script.src = '/assets/three.min.js';
+                script.onload = () => {
+                    console.log('Three.js loaded successfully');
+                    if (typeof THREE !== 'undefined') {
+                        init();
+                    } else {
+                        waitForThree(() => init());
+                    }
+                };
+                script.onerror = handleThreeJSLoadError;
+                document.head.appendChild(script);
+            }
+
+            function waitForThree(callback) {
+                if (typeof THREE !== 'undefined') {
+                    callback();
+                } else {
+                    setTimeout(() => waitForThree(callback), 50);
+                }
+            }
+
             const LSP_DATA = ]] .. json_data .. [[;
 
             let scene, camera, renderer;
             let nodes = [], edges = [];
             let nodeMeshes = [], edgeLines = [], labels = [];
-            let raycaster = new THREE.Raycaster();
-            let mouse = new THREE.Vector2();
+            let raycaster, mouse;
             let selectedNode = null;
             let physicsEnabled = true;
             let showLabels = true;
@@ -301,47 +339,60 @@ function M.get_html()
             let nodePhysics = [];
 
             function init() {
-                scene = new THREE.Scene();
-                scene.background = new THREE.Color(0x0a0a1a);
+                if (typeof THREE === 'undefined') {
+                    console.error('THREE.js is not loaded');
+                    return;
+                }
 
-                camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
-                camera.position.set(0, 0, 35);
+                try {
+                    scene = new THREE.Scene();
+                    scene.background = new THREE.Color(0x0a0a1a);
 
-                renderer = new THREE.WebGLRenderer({ antialias: true });
-                renderer.setSize(window.innerWidth, window.innerHeight);
-                renderer.setClearColor(0x0a0a1a);
-                document.body.appendChild(renderer.domElement);
+                    camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+                    camera.position.set(0, 0, 35);
 
-                const ambientLight = new THREE.AmbientLight(0x404040, 1.0);
-                scene.add(ambientLight);
+                    renderer = new THREE.WebGLRenderer({ antialias: true });
+                    renderer.setSize(window.innerWidth, window.innerHeight);
+                    renderer.setClearColor(0x0a0a1a);
+                    document.body.appendChild(renderer.domElement);
 
-                const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
-                directionalLight.position.set(20, 20, 20);
-                scene.add(directionalLight);
+                    raycaster = new THREE.Raycaster();
+                    mouse = new THREE.Vector2();
 
-                const fillLight = new THREE.DirectionalLight(0x4466ff, 0.3);
-                fillLight.position.set(-20, -20, -20);
-                scene.add(fillLight);
+                    const ambientLight = new THREE.AmbientLight(0x404040, 1.0);
+                    scene.add(ambientLight);
 
-                setupCameraControls();
-                fetchData();
+                    const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+                    directionalLight.position.set(20, 20, 20);
+                    scene.add(directionalLight);
 
-                window.addEventListener('resize', onWindowResize, false);
-                window.addEventListener('mousemove', onMouseMove, false);
-                window.addEventListener('click', onMouseClick, false);
+                    const fillLight = new THREE.DirectionalLight(0x4466ff, 0.3);
+                    fillLight.position.set(-20, -20, -20);
+                    scene.add(fillLight);
 
-                document.getElementById('resetView').addEventListener('click', resetCamera);
-                document.getElementById('togglePhysics').addEventListener('click', togglePhysics);
-                document.getElementById('clearVisited').addEventListener('click', clearVisited);
-                document.getElementById('showLabels').addEventListener('change', function(e) {
-                    showLabels = e.target.checked;
-                    updateLabelsVisibility();
-                });
-                document.getElementById('forceStrength').addEventListener('input', function(e) {
-                    forceStrength = parseFloat(e.target.value);
-                });
+                    setupCameraControls();
+                    fetchData();
 
-                animate();
+                    window.addEventListener('resize', onWindowResize, false);
+                    window.addEventListener('mousemove', onMouseMove, false);
+                    window.addEventListener('click', onMouseClick, false);
+
+                    document.getElementById('resetView').addEventListener('click', resetCamera);
+                    document.getElementById('togglePhysics').addEventListener('click', togglePhysics);
+                    document.getElementById('clearVisited').addEventListener('click', clearVisited);
+                    document.getElementById('showLabels').addEventListener('change', function(e) {
+                        showLabels = e.target.checked;
+                        updateLabelsVisibility();
+                    });
+                    document.getElementById('forceStrength').addEventListener('input', function(e) {
+                        forceStrength = parseFloat(e.target.value);
+                    });
+
+                    animate();
+                } catch (error) {
+                    console.error('Error initializing Three.js scene:', error);
+                    document.getElementById('summary').textContent = 'Error loading 3D visualization';
+                }
             }
 
             function clearVisited() {
@@ -624,11 +675,11 @@ function M.get_html()
                 context.fillText(subtitle, canvas.width / 2, 55);
 
                 context.font = 'bold 14px Arial';
-                context.fillStyle = 'rgba(255, 255, 255, 0.9)';
+                context.fillStyle = 'rgba(255, 255, 255, 0.8)';
                 const locationText = `${node.filename || ''}:${node.line || 1}:${node.column || 1}`;
                 context.fillText(locationText, canvas.width / 2, 78);
 
-                context.font = 'bold 12px Arial';
+                context.font = '12px Arial';
                 context.fillStyle = 'rgba(255, 255, 255, 0.6)';
                 context.fillText('Click to open in Neovim', canvas.width / 2, 98);
 
@@ -994,7 +1045,12 @@ function M.get_html()
                 });
                 renderer.render(scene, camera);
             }
-            init();
+
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', loadThreeJS);
+            } else {
+                loadThreeJS();
+            }
         </script>
     </body>
     </html>
