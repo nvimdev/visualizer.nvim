@@ -295,8 +295,8 @@ function M.get_html()
 
             const REPULSION_FORCE = 80;
             const SPRING_FORCE = 0.08;
-            const DAMPING = 0.95;
-            const CENTER_FORCE = 0.008;
+            const DAMPING = 0.85;
+            const CENTER_FORCE = 0.015;
 
             let nodePhysics = [];
 
@@ -460,6 +460,9 @@ function M.get_html()
                 nodes = data.nodes;
                 edges = data.edges || [];
 
+                physicsEnabled = true;
+                document.getElementById('togglePhysics').textContent = 'Pause Physics';
+
                 initNodePhysics();
                 createNodes();
                 createEdges();
@@ -620,12 +623,12 @@ function M.get_html()
                 }
                 context.fillText(subtitle, canvas.width / 2, 55);
 
-                context.font = '14px Arial';
-                context.fillStyle = 'rgba(255, 255, 255, 0.7)';
+                context.font = 'bold 14px Arial';
+                context.fillStyle = 'rgba(255, 255, 255, 0.9)';
                 const locationText = `${node.filename || ''}:${node.line || 1}:${node.column || 1}`;
                 context.fillText(locationText, canvas.width / 2, 78);
 
-                context.font = '12px Arial';
+                context.font = 'bold 12px Arial';
                 context.fillStyle = 'rgba(255, 255, 255, 0.6)';
                 context.fillText('Click to open in Neovim', canvas.width / 2, 98);
 
@@ -691,6 +694,10 @@ function M.get_html()
             function updateForces() {
                 if (!physicsEnabled) return;
 
+                const nodeCount = nodePhysics.length;
+                const dynamicDamping = nodeCount < 5 ? 0.75 : DAMPING; // 节点少时更快收敛
+                const dynamicCenterForce = nodeCount < 5 ? CENTER_FORCE * 2 : CENTER_FORCE;
+
                 nodePhysics.forEach(physics => {
                     physics.fx = physics.fy = physics.fz = 0;
                 });
@@ -747,20 +754,33 @@ function M.get_html()
                 });
 
                 nodePhysics.forEach(physics => {
-                    physics.fx -= physics.x * CENTER_FORCE * forceStrength;
-                    physics.fy -= physics.y * CENTER_FORCE * forceStrength;
-                    physics.fz -= physics.z * CENTER_FORCE * forceStrength;
+                    physics.fx -= physics.x * dynamicCenterForce * forceStrength;
+                    physics.fy -= physics.y * dynamicCenterForce * forceStrength;
+                    physics.fz -= physics.z * dynamicCenterForce * forceStrength;
                 });
 
                 nodePhysics.forEach(physics => {
-                    physics.vx = (physics.vx + physics.fx) * DAMPING;
-                    physics.vy = (physics.vy + physics.fy) * DAMPING;
-                    physics.vz = (physics.vz + physics.fz) * DAMPING;
+                    physics.vx = (physics.vx + physics.fx) * dynamicDamping;
+                    physics.vy = (physics.vy + physics.fy) * dynamicDamping;
+                    physics.vz = (physics.vz + physics.fz) * dynamicDamping;
 
                     physics.x += physics.vx;
                     physics.y += physics.vy;
                     physics.z += physics.vz;
                 });
+
+                const totalKineticEnergy = nodePhysics.reduce((sum, physics) => {
+                    return sum + physics.vx * physics.vx + physics.vy * physics.vy + physics.vz * physics.vz;
+                }, 0);
+
+                if (totalKineticEnergy < 0.01 && physicsEnabled) {
+                    setTimeout(() => {
+                        if (totalKineticEnergy < 0.01) {
+                            physicsEnabled = false;
+                            document.getElementById('togglePhysics').textContent = 'Resume Physics';
+                        }
+                    }, 1000);
+                }
 
                 updateNodePositions();
             }
@@ -834,6 +854,14 @@ function M.get_html()
                 physicsEnabled = !physicsEnabled;
                 document.getElementById('togglePhysics').textContent = 
                     physicsEnabled ? 'Pause Physics' : 'Resume Physics';
+
+                if (physicsEnabled) {
+                    nodePhysics.forEach(physics => {
+                        physics.vx += (Math.random() - 0.5) * 0.1;
+                        physics.vy += (Math.random() - 0.5) * 0.1;
+                        physics.vz += (Math.random() - 0.5) * 0.1;
+                    });
+                }
             }
 
             function onWindowResize() {
@@ -857,7 +885,6 @@ function M.get_html()
                         const clickedIndex = intersects[0].object.userData.index;
 
                         visitedNodes.add(clickedNode.id);
-
                         openFile(clickedNode);
 
                         if (selectedNode === clickedNode) {
@@ -927,7 +954,7 @@ function M.get_html()
                     let defaultEmissive;
 
                     if (visitedNodes.has(node.id) && selectedNode !== node) {
-                        defaultEmissive = 0x886600; // 金色，表示已访问
+                        defaultEmissive = 0x886600;
                     } else if (node.type === 'root') {
                         defaultEmissive = 0x443300;
                     } else if (node.type === 'incoming') {
