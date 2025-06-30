@@ -9,3 +9,7 @@ end, { desc = 'Visualize outgoing calls (what this function calls)' })
 vim.api.nvim_create_user_command('VisualizerFull', function()
   require('visualizer').show_full()
 end, { desc = 'Visualize full call hierarchy (incoming + outgoing)' })
+
+vim.api.nvim_create_user_command('VisualizerSymbol', function()
+  require('visualizer').show_galaxy()
+end, { desc = 'Visualize full call hierarchy (incoming + outgoing)' })

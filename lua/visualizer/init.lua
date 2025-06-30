@@ -2,9 +2,9 @@ local ms, api, lsp = vim.lsp.protocol.Methods, vim.api, vim.lsp
 local M = {}
 local server = require('visualizer.server')
 local utils = require('visualizer.utils')
-local INCOMING, OUTGOING, FULL = 1, 2, 3
+local INCOMING, OUTGOING, FULL, GALAXY = 1, 2, 3, 4
 
-local function request(client, bufnr, win, mode)
+local function hierarchy_request(client, bufnr, win, mode)
   local cursor_pos = api.nvim_win_get_cursor(win)
   local root = {
     detail = vim.fn.expand('<cword>'),
@@ -75,7 +75,58 @@ local function request(client, bufnr, win, mode)
   end, bufnr)
 end
 
+local function galaxy_request(client, bufnr)
+  client:request(ms.workspace_symbol, { query = '' }, function(err, result)
+    if err then
+      vim.notify('Failed to get workspace symbols: ' .. err.message, vim.log.levels.ERROR)
+      return
+    end
+
+    if not result or #result == 0 then
+      vim.notify('No workspace symbols found', vim.log.levels.WARN)
+      return
+    end
+
+    vim.notify(string.format('Found %d symbols, generating galaxy...', #result), vim.log.levels.INFO)
+
+    local galaxy_data = utils.create_galaxy(result)
+    server.send_data(galaxy_data)
+    vim.schedule(function()
+      server.open()
+    end)
+  end, bufnr)
+end
+
 local function hierarchy(mode)
+  if mode == GALAXY then
+    local bufnr = api.nvim_get_current_buf()
+    local clients = lsp.get_clients({ bufnr = bufnr, method = ms.workspace_symbol })
+    if not next(clients) then
+      vim.notify('No LSP client supports workspace symbols', vim.log.levels.WARN)
+      return
+    end
+
+    if #clients == 1 then
+      galaxy_request(clients[1], bufnr)
+      return
+    end
+
+    local clients_map = {}
+    for _, client in ipairs(clients) do
+      clients_map[client.name] = client
+    end
+
+    vim.ui.select(vim.tbl_keys(clients_map), {
+      prompt = 'Select a client for galaxy view:',
+    }, function(choice)
+      if not clients_map[choice] then
+        return
+      end
+      galaxy_request(clients_map[choice], bufnr)
+    end)
+    return
+  end
+
   local prepare_method = ms.textDocument_prepareCallHierarchy
   local bufnr = api.nvim_get_current_buf()
   local clients = lsp.get_clients({ bufnr = bufnr, method = prepare_method })
@@ -86,7 +137,7 @@ local function hierarchy(mode)
   local win = api.nvim_get_current_win()
 
   if #clients == 1 then
-    request(clients[1], bufnr, win, mode)
+    hierarchy_request(clients[1], bufnr, win, mode)
     return
   end
 
@@ -101,7 +152,7 @@ local function hierarchy(mode)
     if not clients_map[choice] then
       return
     end
-    request(clients_map[choice], bufnr, win, mode)
+    hierarchy_request(clients_map[choice], bufnr, win, mode)
   end)
 end
 
@@ -123,6 +174,13 @@ function M.show_full()
   server.start_server()
   vim.schedule(function()
     hierarchy(FULL)
+  end)
+end
+
+function M.show_galaxy()
+  server.start_server(require('visualizer.symbol').symbol_html)
+  vim.schedule(function()
+    hierarchy(GALAXY)
   end)
 end
 
