@@ -10,7 +10,9 @@ local function get_assets_dir()
   return script_path:sub(1, e)
 end
 
+-- 处理文件打开请求
 local function handle_open_file(client, request_body)
+  -- 解析JSON请求体
   local success, data = pcall(vim.json.decode, request_body)
   if not success or not data then
     uv.write(client, 'HTTP/1.1 400 Bad Request\r\n\r\n{"error": "Invalid JSON"}')
@@ -26,11 +28,17 @@ local function handle_open_file(client, request_body)
     return
   end
 
+  -- 使用vim.schedule确保在主线程中执行
   vim.schedule(function()
+    -- 检查文件是否存在
     if vim.fn.filereadable(filepath) == 1 then
+      -- 打开文件并跳转到指定位置
       vim.cmd('edit ' .. vim.fn.fnameescape(filepath))
+      -- 跳转到指定行列
       vim.api.nvim_win_set_cursor(0, { line, column - 1 }) -- nvim使用0基索引的列
+      -- 居中显示
       vim.cmd('normal! zz')
+      -- 显示提示信息
       vim.notify(
         string.format('Opened %s at line %d, column %d', vim.fn.fnamemodify(filepath, ':t'), line, column),
         vim.log.levels.INFO
@@ -40,6 +48,7 @@ local function handle_open_file(client, request_body)
     end
   end)
 
+  -- 返回成功响应
   local response = vim.json.encode({ success = true, message = 'File opened' })
   uv.write(client, {
     'HTTP/1.1 200 OK\r\n',
@@ -75,11 +84,13 @@ function M.start_server()
       if chunk then
         request_data = request_data .. chunk
 
+        -- 检查是否接收完整请求
         local headers_end = request_data:find('\r\n\r\n')
         if headers_end then
           local headers = request_data:sub(1, headers_end - 1)
           local body = request_data:sub(headers_end + 4)
 
+          -- 处理不同类型的请求
           if headers:match('GET /assets/') then
             local path = headers:match('GET (/assets/[^%s]+)')
             if path then
@@ -111,12 +122,14 @@ function M.start_server()
               uv.write(client, 'HTTP/1.1 404 Not Found\r\n\r\n')
             end
           elseif headers:match('POST /open%-file') then
+            -- 处理打开文件请求
             local content_length = headers:match('Content%-Length: (%d+)')
             if content_length then
               local expected_length = tonumber(content_length)
               if #body >= expected_length then
                 handle_open_file(client, body:sub(1, expected_length))
               else
+                -- 等待更多数据
                 return
               end
             else
@@ -266,6 +279,12 @@ function M.get_html()
                 <div class="legend-color legend-visited"></div>
                 <span>Visited Nodes</span>
             </div>
+            <div style="margin-top: 10px; padding-top: 10px; border-top: 1px solid rgba(255,255,255,0.2);">
+                <div><strong>Flow Effects</strong></div>
+                <div style="font-size: 11px; color: #4fc3f7; margin: 2px 0;">● Blue particles: Incoming calls</div>
+                <div style="font-size: 11px; color: #66bb6a; margin: 2px 0;">● Green particles: Outgoing calls</div>
+                <div style="font-size: 11px; color: #aaa; margin: 2px 0;">Speed = Call frequency</div>
+            </div>
         </div>
         <div id="controls">
             <button id="resetView">Reset View</button>
@@ -274,15 +293,20 @@ function M.get_html()
             <label>
                 <input type="checkbox" id="showLabels" checked> Show Labels
             </label>
+            <label>
+                <input type="checkbox" id="showFlowingParticles" checked> Flow Effects
+            </label>
             <br>
             <label>Force Strength: <input type="range" id="forceStrength" min="0.1" max="3" step="0.1" value="1"></label>
+            <label>Flow Speed: <input type="range" id="flowSpeed" min="0.1" max="3" step="0.1" value="1"></label>
         </div>
 
         <script>
+            // 首先定义错误处理函数
             function handleThreeJSLoadError() {
                 console.error('Failed to load Three.js from /assets/three.min.js');
                 document.getElementById('summary').textContent = 'Failed to load 3D visualization library';
-                // fallback from cdn
+                // 尝试从 CDN 加载 Three.js 作为备选
                 const script = document.createElement('script');
                 script.src = 'https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js';
                 script.onload = () => {
@@ -296,11 +320,13 @@ function M.get_html()
                 document.head.appendChild(script);
             }
 
+            // 动态加载 Three.js
             function loadThreeJS() {
                 const script = document.createElement('script');
                 script.src = '/assets/three.min.js';
                 script.onload = () => {
                     console.log('Three.js loaded successfully');
+                    // Three.js 加载成功，开始初始化
                     if (typeof THREE !== 'undefined') {
                         init();
                     } else {
@@ -311,6 +337,7 @@ function M.get_html()
                 document.head.appendChild(script);
             }
 
+            // 确保 Three.js 完全加载后再执行主代码
             function waitForThree(callback) {
                 if (typeof THREE !== 'undefined') {
                     callback();
@@ -324,21 +351,25 @@ function M.get_html()
             let scene, camera, renderer;
             let nodes = [], edges = [];
             let nodeMeshes = [], edgeLines = [], labels = [];
+            let flowingParticles = []; // 新增：流动粒子数组
             let raycaster, mouse;
             let selectedNode = null;
             let physicsEnabled = true;
             let showLabels = true;
+            let showFlowingParticles = true; // 新增：流动粒子显示开关
+            let flowSpeed = 1.0; // 新增：流动速度倍数
             let forceStrength = 1.0;
-            let visitedNodes = new Set();
+            let visitedNodes = new Set(); // 记录已访问的节点
 
             const REPULSION_FORCE = 80;
             const SPRING_FORCE = 0.08;
-            const DAMPING = 0.85;
-            const CENTER_FORCE = 0.015;
+            const DAMPING = 0.85; // 降低阻尼，让动画更快稳定
+            const CENTER_FORCE = 0.015; // 增加中心力，更快收敛
 
             let nodePhysics = [];
 
             function init() {
+                // 双重检查 THREE 是否可用
                 if (typeof THREE === 'undefined') {
                     console.error('THREE.js is not loaded');
                     return;
@@ -356,6 +387,7 @@ function M.get_html()
                     renderer.setClearColor(0x0a0a1a);
                     document.body.appendChild(renderer.domElement);
 
+                    // 初始化鼠标和射线检测
                     raycaster = new THREE.Raycaster();
                     mouse = new THREE.Vector2();
 
@@ -384,8 +416,15 @@ function M.get_html()
                         showLabels = e.target.checked;
                         updateLabelsVisibility();
                     });
+                    document.getElementById('showFlowingParticles').addEventListener('change', function(e) {
+                        showFlowingParticles = e.target.checked;
+                        updateFlowingParticlesVisibility();
+                    });
                     document.getElementById('forceStrength').addEventListener('input', function(e) {
                         forceStrength = parseFloat(e.target.value);
+                    });
+                    document.getElementById('flowSpeed').addEventListener('input', function(e) {
+                        flowSpeed = parseFloat(e.target.value);
                     });
 
                     animate();
@@ -395,6 +434,7 @@ function M.get_html()
                 }
             }
 
+            // 清除访问记录
             function clearVisited() {
                 visitedNodes.clear();
                 resetNodeColors();
@@ -406,6 +446,7 @@ function M.get_html()
                 }
             }
 
+            // 打开文件
             function openFile(node) {
                 if (!node.filepath) {
                     console.error('No filepath available for node:', node);
@@ -511,6 +552,7 @@ function M.get_html()
                 nodes = data.nodes;
                 edges = data.edges || [];
 
+                // 重新启用物理引擎
                 physicsEnabled = true;
                 document.getElementById('togglePhysics').textContent = 'Pause Physics';
 
@@ -524,10 +566,16 @@ function M.get_html()
                 nodeMeshes.forEach(mesh => scene.remove(mesh));
                 edgeLines.forEach(line => scene.remove(line));
                 labels.forEach(label => scene.remove(label));
+                
+                // 新增：清理流动粒子
+                flowingParticles.forEach(group => {
+                    group.particles.forEach(particle => scene.remove(particle));
+                });
 
                 nodeMeshes = [];
                 edgeLines = [];
                 labels = [];
+                flowingParticles = []; // 重置粒子数组
                 nodePhysics = [];
             }
 
@@ -548,7 +596,7 @@ function M.get_html()
 
                     if (node.type === 'root' || node.isDefinition) {
                         geometry = new THREE.OctahedronGeometry(size, 0);
-                        color = 0xff6b6b;
+                        color = 0xffd700;
                         emissiveColor = 0x443300;
                     } else if (node.type === 'incoming' || node.isIncoming) {
                         geometry = new THREE.SphereGeometry(size * 0.8, 20, 20);
@@ -609,6 +657,9 @@ function M.get_html()
                         edgeLines.push(line);
 
                         addArrow(sourceIndex, targetIndex, edge.type);
+                        
+                        // 新增：为每条边创建流动粒子
+                        createFlowingParticles(sourceIndex, targetIndex, edge);
                     }
                 });
             }
@@ -624,6 +675,140 @@ function M.get_html()
                 arrow.userData = { sourceIndex, targetIndex, isArrow: true, edgeType };
                 scene.add(arrow);
                 edgeLines.push(arrow);
+            }
+
+            // 新增：创建流动粒子效果
+            function createFlowingParticles(sourceIndex, targetIndex, edge) {
+                const callCount = edge.call_count || 1;
+                const edgeType = edge.type;
+                
+                // 根据调用次数决定粒子数量（1-5个粒子）
+                const particleCount = Math.min(Math.max(callCount, 1), 5);
+                
+                // 根据边类型确定颜色和流动方向
+                let particleColor, flowDirection;
+                if (edgeType === 'incoming') {
+                    particleColor = 0x4fc3f7; // 蓝色 - 从caller流向current
+                    flowDirection = 1; // 正向流动
+                } else if (edgeType === 'outgoing') {
+                    particleColor = 0x66bb6a; // 绿色 - 从current流向callee
+                    flowDirection = 1; // 正向流动
+                } else {
+                    particleColor = 0xffd700; // 金色 - 默认
+                    flowDirection = 1;
+                }
+
+                // 创建粒子组
+                const particleGroup = {
+                    sourceIndex,
+                    targetIndex,
+                    edgeType,
+                    particles: [],
+                    speed: 0.01 + (callCount * 0.005), // 调用次数越多，流动越快
+                    flowDirection
+                };
+
+                // 创建多个粒子，沿路径分布
+                for (let i = 0; i < particleCount; i++) {
+                    const particleGeometry = new THREE.SphereGeometry(0.15, 8, 8);
+                    const particleMaterial = new THREE.MeshBasicMaterial({
+                        color: particleColor,
+                        transparent: true,
+                        opacity: 0.8,
+                        emissive: particleColor,
+                        emissiveIntensity: 0.3
+                    });
+
+                    const particle = new THREE.Mesh(particleGeometry, particleMaterial);
+                    
+                    // 粒子沿路径的初始位置（0到1之间）
+                    const initialProgress = i / particleCount;
+                    particle.userData = {
+                        progress: initialProgress,
+                        initialProgress: initialProgress,
+                        sourceIndex,
+                        targetIndex,
+                        speed: particleGroup.speed,
+                        flowDirection
+                    };
+
+                    scene.add(particle);
+                    particleGroup.particles.push(particle);
+                }
+
+                flowingParticles.push(particleGroup);
+            }
+
+            // 新增：更新流动粒子显示状态
+            function updateFlowingParticlesVisibility() {
+                flowingParticles.forEach(group => {
+                    group.particles.forEach(particle => {
+                        particle.visible = showFlowingParticles;
+                    });
+                });
+            }
+
+            // 修改：更新流动粒子位置，支持速度调节
+            function updateFlowingParticles() {
+                if (!showFlowingParticles) return; // 如果隐藏粒子，跳过更新
+
+                flowingParticles.forEach(group => {
+                    const sourcePos = new THREE.Vector3(
+                        nodePhysics[group.sourceIndex].x,
+                        nodePhysics[group.sourceIndex].y,
+                        nodePhysics[group.sourceIndex].z
+                    );
+                    const targetPos = new THREE.Vector3(
+                        nodePhysics[group.targetIndex].x,
+                        nodePhysics[group.targetIndex].y,
+                        nodePhysics[group.targetIndex].z
+                    );
+
+                    group.particles.forEach(particle => {
+                        // 更新粒子沿路径的进度，应用速度倍数
+                        const adjustedSpeed = particle.userData.speed * flowSpeed;
+                        particle.userData.progress += adjustedSpeed * particle.userData.flowDirection;
+                        
+                        // 循环流动：当粒子到达终点时重新开始
+                        if (particle.userData.progress > 1) {
+                            particle.userData.progress = 0;
+                        } else if (particle.userData.progress < 0) {
+                            particle.userData.progress = 1;
+                        }
+
+                        // 计算粒子在路径上的位置
+                        const progress = particle.userData.progress;
+                        particle.position.lerpVectors(sourcePos, targetPos, progress);
+
+                        // 添加轻微的上下浮动效果
+                        const time = Date.now() * 0.003;
+                        const floatOffset = Math.sin(time + particle.userData.initialProgress * Math.PI * 2) * 0.2;
+                        particle.position.y += floatOffset;
+
+                        // 根据速度调整粒子亮度，考虑速度倍数
+                        const intensity = 0.3 + (adjustedSpeed * 20);
+                        particle.material.emissiveIntensity = Math.min(intensity, 0.8);
+
+                        // 粒子尾迹效果：越接近终点越透明
+                        const fadeProgress = Math.abs(0.5 - progress) * 2; // 中间最亮，两端较暗
+                        particle.material.opacity = 0.4 + fadeProgress * 0.4;
+
+                        // 为选中的连接添加特殊效果
+                        if (selectedNode) {
+                            const sourceNode = nodes[group.sourceIndex];
+                            const targetNode = nodes[group.targetIndex];
+                            if (sourceNode.id === selectedNode.id || targetNode.id === selectedNode.id) {
+                                // 选中相关连接的粒子更亮更大
+                                particle.scale.set(1.5, 1.5, 1.5);
+                                particle.material.emissiveIntensity = Math.min(intensity * 1.5, 1.0);
+                            } else {
+                                particle.scale.set(1, 1, 1);
+                            }
+                        } else {
+                            particle.scale.set(1, 1, 1);
+                        }
+                    });
+                });
             }
 
             function addLabel(mesh, node, index) {
@@ -646,22 +831,22 @@ function M.get_html()
                     gradient.addColorStop(0, 'rgba(78, 205, 196, 0.9)');
                     gradient.addColorStop(1, 'rgba(50, 160, 150, 0.9)');
                 }
-
+                
                 context.fillStyle = gradient;
                 context.fillRect(0, 0, canvas.width, canvas.height);
-
+                
                 context.strokeStyle = 'rgba(255, 255, 255, 0.4)';
                 context.lineWidth = 2;
                 context.strokeRect(1, 1, canvas.width - 2, canvas.height - 2);
-
+                
                 context.fillStyle = 'white';
                 context.textAlign = 'center';
                 context.shadowColor = 'rgba(0, 0, 0, 0.8)';
                 context.shadowBlur = 4;
-
+                
                 context.font = 'bold 24px Arial';
                 context.fillText(node.name, canvas.width / 2, 32);
-
+                
                 context.font = '16px Arial';
                 context.fillStyle = 'rgba(255, 255, 255, 0.9)';
                 let subtitle = '';
@@ -674,11 +859,13 @@ function M.get_html()
                 }
                 context.fillText(subtitle, canvas.width / 2, 55);
 
-                context.font = 'bold 14px Arial';
-                context.fillStyle = 'rgba(255, 255, 255, 0.8)';
+                // 显示文件名:行号:列号
+                context.font = '14px Arial';
+                context.fillStyle = 'rgba(255, 255, 255, 0.7)';
                 const locationText = `${node.filename || ''}:${node.line || 1}:${node.column || 1}`;
                 context.fillText(locationText, canvas.width / 2, 78);
 
+                // 添加点击提示
                 context.font = '12px Arial';
                 context.fillStyle = 'rgba(255, 255, 255, 0.6)';
                 context.fillText('Click to open in Neovim', canvas.width / 2, 98);
@@ -745,6 +932,7 @@ function M.get_html()
             function updateForces() {
                 if (!physicsEnabled) return;
 
+                // 根据节点数量动态调整参数
                 const nodeCount = nodePhysics.length;
                 const dynamicDamping = nodeCount < 5 ? 0.75 : DAMPING; // 节点少时更快收敛
                 const dynamicCenterForce = nodeCount < 5 ? CENTER_FORCE * 2 : CENTER_FORCE;
@@ -820,17 +1008,19 @@ function M.get_html()
                     physics.z += physics.vz;
                 });
 
+                // 检查是否所有节点的速度都很小，如果是则自动暂停物理引擎
                 const totalKineticEnergy = nodePhysics.reduce((sum, physics) => {
                     return sum + physics.vx * physics.vx + physics.vy * physics.vy + physics.vz * physics.vz;
                 }, 0);
 
+                // 当总动能很小时自动暂停物理引擎（避免无意义的微小抖动）
                 if (totalKineticEnergy < 0.01 && physicsEnabled) {
                     setTimeout(() => {
-                        if (totalKineticEnergy < 0.01) {
+                        if (totalKineticEnergy < 0.01) { // 再次检查
                             physicsEnabled = false;
                             document.getElementById('togglePhysics').textContent = 'Resume Physics';
                         }
-                    }, 1000);
+                    }, 1000); // 1秒后检查
                 }
 
                 updateNodePositions();
@@ -905,7 +1095,8 @@ function M.get_html()
                 physicsEnabled = !physicsEnabled;
                 document.getElementById('togglePhysics').textContent = 
                     physicsEnabled ? 'Pause Physics' : 'Resume Physics';
-
+                
+                // 如果重新启用物理引擎，给节点一些随机速度重新开始动画
                 if (physicsEnabled) {
                     nodePhysics.forEach(physics => {
                         physics.vx += (Math.random() - 0.5) * 0.1;
@@ -935,7 +1126,10 @@ function M.get_html()
                         const clickedNode = intersects[0].object.userData.node;
                         const clickedIndex = intersects[0].object.userData.index;
 
+                        // 标记为已访问
                         visitedNodes.add(clickedNode.id);
+
+                        // 打开文件
                         openFile(clickedNode);
 
                         if (selectedNode === clickedNode) {
@@ -1004,8 +1198,9 @@ function M.get_html()
                     const node = nodes[index];
                     let defaultEmissive;
 
+                    // 检查是否为已访问节点
                     if (visitedNodes.has(node.id) && selectedNode !== node) {
-                        defaultEmissive = 0x886600;
+                        defaultEmissive = 0x886600; // 金色，表示已访问
                     } else if (node.type === 'root') {
                         defaultEmissive = 0x443300;
                     } else if (node.type === 'incoming') {
@@ -1036,6 +1231,8 @@ function M.get_html()
             function animate() {
                 requestAnimationFrame(animate);
                 updateForces();
+                updateFlowingParticles(); // 新增：更新流动粒子
+                
                 const time = Date.now() * 0.0005;
                 nodeMeshes.forEach((mesh, i) => {
                     if (selectedNode !== mesh.userData.node) {
@@ -1046,9 +1243,12 @@ function M.get_html()
                 renderer.render(scene, camera);
             }
 
+            // 等待 Three.js 加载完成后再初始化，现在由 loadThreeJS() 处理
+            // 页面加载完成后开始加载 Three.js
             if (document.readyState === 'loading') {
                 document.addEventListener('DOMContentLoaded', loadThreeJS);
             } else {
+                // 如果 DOM 已经加载完成，直接开始加载 Three.js
                 loadThreeJS();
             }
         </script>
