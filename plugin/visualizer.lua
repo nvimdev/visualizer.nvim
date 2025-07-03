@@ -1,15 +1,17 @@
-vim.api.nvim_create_user_command('VisualizerIncoming', function()
-  require('visualizer').show_incoming()
-end, { desc = 'Visualize incoming calls (who calls this function)' })
+if vim.g.load_visualizer then
+  return
+end
 
-vim.api.nvim_create_user_command('VisualizerOutgoing', function()
-  require('visualizer').show_outgoing()
-end, { desc = 'Visualize outgoing calls (what this function calls)' })
+vim.g.load_visualizer = true
 
-vim.api.nvim_create_user_command('VisualizerFull', function()
-  require('visualizer').show_full()
-end, { desc = 'Visualize full call hierarchy (incoming + outgoing)' })
-
-vim.api.nvim_create_user_command('VisualizerSymbol', function()
-  require('visualizer').show_galaxy()
-end, { desc = 'Visualize full call hierarchy (incoming + outgoing)' })
+vim.api.nvim_create_user_command('Visualizer', function(args)
+  local f = require('visualizer')[args.args]
+  if f then
+    f()
+  end
+end, {
+  nargs = 1,
+  complete = function()
+    return vim.tbl_keys(require('visualizer'))
+  end,
+})

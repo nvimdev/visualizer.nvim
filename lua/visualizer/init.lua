@@ -156,28 +156,28 @@ local function hierarchy(mode)
   end)
 end
 
-function M.show_incoming()
+function M.incoming()
   server.start_server()
   vim.schedule(function()
     hierarchy(INCOMING)
   end)
 end
 
-function M.show_outgoing()
+function M.outgoing()
   server.start_server()
   vim.schedule(function()
     hierarchy(OUTGOING)
   end)
 end
 
-function M.show_full()
+function M.full()
   server.start_server()
   vim.schedule(function()
     hierarchy(FULL)
   end)
 end
 
-function M.show_galaxy()
+function M.workspace_symbol()
   server.start_server(require('visualizer.symbol').symbol_html)
   vim.schedule(function()
     hierarchy(GALAXY)

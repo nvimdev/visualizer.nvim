@@ -21,9 +21,10 @@ A Neovim plugin that provides interactive 3D visualization of LSP call hierarchi
 
 1. Place cursor on a function
 2. Use one of the commands:
-   - `VisualizerIncoming` - Show functions that call this one
-   - `VisualizerOutgoing` - Show functions this one call
-   - `VisualizerFull`     - Show both incoming and outgoing calls
+   - `Visualizer incoming`          - Show functions that call this one
+   - `Visualizer outgoing`          - Show functions this one call
+   - `Visualizer full`              - Show both incoming and outgoing calls
+   - `Visualizer workspace_symbol`  - Show lsp workspace symbol
 
 3. In the 3D visualization:
    - **Click nodes** to open files in Neovim
